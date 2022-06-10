@@ -1,0 +1,132 @@
+USE [OblKred]
+GO
+
+/****** Object:  StoredProcedure [RRudyk].[GET_TotCurrentAccountLegalEntities]    Script Date: 10.06.2022 14:37:54 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+
+
+
+
+
+
+
+--	------------------------------------------------------------------------------------------------------------------------------
+--	
+--		2022-06-09, RUDYK R.
+--	
+--		
+--		
+--		
+--	
+--	
+CREATE PROCEDURE [RRudyk].[GET_TotCurrentAccountLegalEntities]
+	@aREPORTDATE	DATE,--VARCHAR(10)
+	@bREPORTDATE	DATE--VARCHAR(10)
+AS
+	SET	NOCOUNT ON;
+	DECLARE
+	  @L1 money --UAH 
+	 ,@L2 money --USD
+	 ,@L3 money --EUR
+	 set @L1 =1000000 set @L2 =5000 set @L3 =5000
+
+			IF    object_id('tempdb..#ARC_BALANCE')    IS NOT NULL
+			drop table #ARC_BALANCE
+			CREATE TABLE      #ARC_BALANCE
+			(ARCDATE datetime,ACCOUNTID INT,BACCOUNTID varchar(4),ACCOUNTNO varchar(32),CURRENCYID varchar(5),CORRMODE INT,SUMMANOW MONEY,SUMMANOWEQ MONEY)
+			INSERT INTO		#ARC_BALANCE
+			(ARCDATE ,ACCOUNTID,BACCOUNTID,ACCOUNTNO,CURRENCYID,CORRMODE ,SUMMANOW ,SUMMANOWEQ)
+
+			exec ('
+			SELECT * FROM   
+			OPENQUERY(B2ORACLE_REPORT,''
+			SELECT  
+			Z.ARCDATE
+			,Z.ACCOUNTID,A.BACCOUNTID,A.ACCOUNTNO,A.CURRENCYID,z.CORRMODE
+			,replace(nvl(z.SUMMANOW,0), ''''.'''', '''','''')/100 SUMMANOW
+			,replace(nvl(z.SUMMANOWEQ,0), ''''.'''', '''','''')/100 SUMMANOWEQ
+			FROM CREATOR.ARC_BALANCE z
+			 LEFT JOIN CREATOR.AACCOUNT A ON A.ID=Z.ACCOUNTID 
+			WHERE z.ARCDATE between TO_DATE('''''+ @aREPORTDATE +''''',''''yyyy-mm-dd'''') 
+								and TO_DATE('''''+ @bREPORTDATE +''''',''''yyyy-mm-dd'''')
+			and z.CORRMODE in (0,3) 
+			AND A.BACCOUNTID IN (
+			2600,2601,2602,2603,2604,2605,2650
+			) and z.SUMMANOWEQ<>0
+			'') ')
+			--select * from #ARC_BALANCE z where isnull(z.SUMMANOW,0)>0
+
+			IF    object_id('tempdb..#BASE')    IS NOT NULL
+			drop table #BASE
+			select distinct
+			convert(date,r.ARCDATE,104) ARCDATE
+			,A.ID ACCOUNTID,A.BACCOUNTID,A.ACCOUNTNO,A.CURRENCYID,AA.SYMBOLCODE,c.sname name
+			,a.CONTRAGENTID,c.BUSINESSPARTNERID,c.IDENTIFYCODE ,a.TOBOID DIVISIONID,IB.sname,c.contragenttypeid,ct.officialtype
+			,case when ct.officialtype = 1 then 'bank' when ct.officialtype = 2 then 'YO' when ct.officialtype = 3 then 'FO' end officialtype_KOD
+			,isnull(z.SUMMANOW,0) SUMMANOW ,isnull(z.SUMMANOWEQ,0) SUMMANOWEQ
+			,case when a.BACCOUNTID in (2600,2601,2602,2603,2604,2605,2650) then '01_YO'   end as 'TYPE_BACCOUNTID'
+			into #BASE
+			from hd.b2.AACCOUNT  a 
+				LEFT JOIN hd.b2.CURRENCY AA ON AA.ID=A.CURRENCYID
+				left join hd.b2.CURRENCYRATEALL r on a.CURRENCYID=r.CURRENCYID 
+				left join hd.b2.contragent c on c.id=a.CONTRAGENTID
+				left join [HD].[b2].[division] IB on IB.ID=a.TOBOID
+				left join hd.b2.contragenttype ct on c.contragenttypeid=ct.cid
+				left join #ARC_BALANCE z on a.id=z.ACCOUNTID and z.CORRMODE in (0,3) and r.arcdate=z.ARCDATE 
+			where 
+			r.ARCDATE between  @aREPORTDATE and  @bREPORTDATE
+			and isnull(z.SUMMANOWEQ,0)>0 and ( a.dateclose>=@aREPORTDATE  or a.dateclose is null)
+			and A.BACCOUNTID in (2600,2601,2602,2603,2604,2605,2650)
+			--select * from #BASE t
+
+			--select * from #BASE t where  t.BUSINESSPARTNERID =3996 and t.SUMMANOW<>0
+			--Концентрація фінансування
+			IF    object_id('tempdb..#BASE1')    IS NOT NULL
+			drop table #BASE1
+			select distinct--top 1000
+			ROW_NUMBER() OVER(PARTITION BY t.ARCDATE,t.currencyid ORDER BY t.ARCDATE,t.currencyid,sum(t.SUMMANOWEQ) DESC) AS Row#
+			,t.ARCDATE,t.currencyid,t.BUSINESSPARTNERID,t.name
+			,sum(t.SUMMANOW) SUMMANOW,sum(t.SUMMANOWEQ) SUMMANOWEQ
+			,t.officialtype_KOD
+			into #BASE1
+			from #BASE t
+			where isnull(t.SUMMANOWeQ,0)>0 
+			GROUP BY t.ARCDATE,t.BUSINESSPARTNERID,t.name,t.currencyid,t.officialtype_KOD
+			--select * from #BASE1 t
+
+			TRUNCATE TABLE [RRudyk].[TopCurrentAccountLegalEntities]
+			--DELETE	T
+			--FROM	[RRudyk].[TopCurrentAccountLegalEntities] T
+			--WHERE	T.ARCDATE BETWEEN @aREPORTDATE AND @bREPORTDATE;
+
+			INSERT	[RRudyk].[TopCurrentAccountLegalEntities]
+
+			select distinct t.Row#,t.ARCDATE,t.CURRENCYID,t.BUSINESSPARTNERID,t.NAME,t.SUMMANOW 
+			from #BASE1 t 
+			where t.currencyid in (980,840,978)
+			and t.SUMMANOW >= (case when t.currencyid in (980) then @L1--1000000
+									when t.currencyid in (840) then @L2--5000
+									when t.currencyid in (978) then @L3--5000
+								end )
+			ORDER BY t.ARCDATE,t.currencyid,t.SUMMANOW
+
+			select * from [RRudyk].[TopCurrentAccountLegalEntities]
+			--select * from hd.b2.contragenttype
+			--select * from hd.b2.AACCOUNT  a  where a.id=13686
+
+
+			;
+
+
+RETURN 0;
+GO
+
+
